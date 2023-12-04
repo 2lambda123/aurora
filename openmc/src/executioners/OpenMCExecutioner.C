@@ -175,11 +175,13 @@ OpenMCExecutioner::initialize()
 
   if(!initOpenMC()) mooseError("Failed to initialize OpenMC");
 
-  if(!initDAGUniverse()) mooseError("Failed to initialize DAGMC universe");
-
   if(!initMaterials()) mooseError("Failed to initialize material data");
 
+  if(!initDAGUniverse()) mooseError("Failed to initialize DAGMC universe");
+
   if(!initMeshTallies()) mooseError("Failed to set up mesh filter tally");
+
+  if(!updateOpenMC()) mooseError("Failed to update OpenMC during initialisation step");
 
   isInit = true;
 }
@@ -191,7 +193,7 @@ OpenMCExecutioner::update()
   if(setProblemLocal) return;
 
   // Update MOAB - extract surfaces from temperature binning
-  if(!moab().update()) mooseError("Failed to update MOAB");
+  moab().update();
 
   // Load new geometry into OpenMC and reinitialise cross sections
   if(!updateOpenMC()) mooseError("Failed to update OpenMC");
@@ -263,8 +265,10 @@ OpenMCExecutioner::setSolution(std::vector< double > & results_by_elem,
 {
   if(results_by_elem.empty()) return false;
 
+  bool normToVol = !getParam<bool>("no_scaling");
+
   // Pass the results into moab user object
-  if(!moab().setSolution(var_name,results_by_elem,scale_factor,isErr,true)){
+  if(!moab().setSolution(var_name,results_by_elem,scale_factor,isErr,normToVol)){
     std::cerr<<"Failed to pass OpenMC results into MoabUserObject"<<std::endl;
     return false;
   }
@@ -297,9 +301,10 @@ OpenMCExecutioner::initMOAB()
       if(!moabUO.hasProblem()){
         moabUO.setProblem(&feProblem());
         setProblemLocal=true;
+        moabUO.initBinningData();
       }
 
-      moabUO.initMOAB();
+      moabUO.update();
 
     }
   catch(std::exception &e)
@@ -543,6 +548,17 @@ OpenMCExecutioner::setupTally(int32_t& tally_id,
     score_data.index = score_names.size()-1;
   }
   tally_ptr->set_scores(score_names);
+
+  // Add triggers
+  // TODO generalise
+  // Trigger metric
+  openmc::TriggerMetric metric=openmc::TriggerMetric::relative_error;
+  // Trigger threshhold
+  double threshold=0.01;
+  tally_ptr->triggers_.reserve(tally_ptr->scores_.size());
+  for (auto i_score = 0; i_score < tally_ptr->scores_.size(); ++i_score) {
+    tally_ptr->triggers_.push_back({metric, threshold, i_score});
+  }
 }
 
 
@@ -565,6 +581,11 @@ OpenMCExecutioner::updateOpenMC()
 
   // Final OpenMC setup after geometry is updated.
   completeSetup();
+
+  // Overwrite summary file
+  if (this->comm().rank() == 0 && openmc::settings::output_summary){
+    openmc::write_summary();
+  }
 
   return true;
 }
